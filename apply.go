@@ -2,16 +2,32 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	st "github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
+
+// AuditEntry is one JSON line in the <manifest>.audit.jsonl log produced by
+// apply --execute: one entry per deleted/failed object, plus a final SUMMARY
+// line.
+type AuditEntry struct {
+	Timestamp string `json:"ts"`
+	Action    string `json:"action"`
+	Bucket    string `json:"bucket"`
+	Key       string `json:"key,omitempty"`
+	VersionID string `json:"version_id,omitempty"`
+	Result    string `json:"result"`
+	Error     string `json:"error,omitempty"`
+	SizeBytes int64  `json:"size_bytes,omitempty"`
+}
 
 func apply(args []string) error {
 	f := flag.NewFlagSet("apply", flag.ContinueOnError)
@@ -36,6 +52,20 @@ func apply(args []string) error {
 	if err != nil {
 		return fmt.Errorf("invalid --cutoff: %w", err)
 	}
+	summaryPath := *manifest + ".summary.json"
+	if data, err := os.ReadFile(summaryPath); err == nil {
+		var ps PlanSummary
+		if err := json.Unmarshal(data, &ps); err != nil {
+			return fmt.Errorf("parse plan summary %s: %w", summaryPath, err)
+		}
+		if ps.Cutoff != cutoffTime.Format(time.RFC3339) {
+			return fmt.Errorf("apply --cutoff %s does not match plan cutoff %s", cutoffTime.Format(time.RFC3339), ps.Cutoff)
+		}
+		log.Printf("Plan cutoff verified: %s", ps.Cutoff)
+	} else {
+		log.Printf("WARNING: plan summary %s not found; cannot verify --cutoff matches plan", summaryPath)
+	}
+
 	hashPath := *manifest + ".sha256"
 	if err := verifyManifestHash(*manifest, hashPath); err != nil {
 		return fmt.Errorf("manifest integrity check failed: %w", err)
@@ -82,6 +112,14 @@ func apply(args []string) error {
 		return err
 	}
 
+	auditPath := *manifest + ".audit.jsonl"
+	auditFile, err := os.Create(auditPath)
+	if err != nil {
+		return fmt.Errorf("create audit log: %w", err)
+	}
+	defer auditFile.Close()
+	auditEnc := json.NewEncoder(auditFile)
+
 	// Execute path streams the manifest row-by-row instead of loading it all
 	// into memory, so a manifest with millions of candidates can't OOM the
 	// process. Candidates are buffered only up to one DeleteObjects batch at
@@ -109,7 +147,7 @@ func apply(args []string) error {
 		total++
 		batch = append(batch, c)
 		if len(batch) >= 1000 {
-			d, fl, err := deleteBatch(ctx, client, *bucket, state, batch)
+			d, fl, err := deleteBatch(ctx, client, *bucket, state, batch, auditEnc)
 			deleted += d
 			failed += fl
 			batch = batch[:0]
@@ -123,7 +161,7 @@ func apply(args []string) error {
 		return streamErr
 	}
 	if len(batch) > 0 {
-		d, fl, err := deleteBatch(ctx, client, *bucket, state, batch)
+		d, fl, err := deleteBatch(ctx, client, *bucket, state, batch, auditEnc)
 		deleted += d
 		failed += fl
 		if err != nil {
@@ -133,6 +171,21 @@ func apply(args []string) error {
 	if total == 0 {
 		return nil
 	}
+
+	manifestHash, hashErr := hashManifest(*manifest)
+	if hashErr != nil {
+		log.Printf("WARNING: could not hash manifest for audit summary: %v", hashErr)
+	}
+	auditEnc.Encode(map[string]any{
+		"ts":            time.Now().UTC().Format(time.RFC3339),
+		"action":        "SUMMARY",
+		"deleted":       deleted,
+		"failed":        failed,
+		"manifest_hash": manifestHash,
+	})
+	auditFile.Sync()
+	log.Printf("Audit log: %s", auditPath)
+
 	log.Printf("APPLY COMPLETE deleted=%d failed=%d", deleted, failed)
 	if failed > 0 {
 		return fmt.Errorf("%d delete attempts failed; inspect logs", failed)
@@ -141,10 +194,13 @@ func apply(args []string) error {
 }
 
 // deleteBatch issues a single DeleteObjects call (with retry) for one batch
-// of candidates and reports how many succeeded and failed.
-func deleteBatch(ctx context.Context, client *s3.Client, bucket, state string, batch []Candidate) (deleted int, failed int, err error) {
+// of candidates and reports how many succeeded and failed. If auditEnc is
+// non-nil, one audit line is written per deleted/failed object.
+func deleteBatch(ctx context.Context, client *s3.Client, bucket, state string, batch []Candidate, auditEnc *json.Encoder) (deleted int, failed int, err error) {
 	ids := make([]st.ObjectIdentifier, 0, len(batch))
+	sizeByKeyVersion := make(map[string]int64, len(batch))
 	for _, c := range batch {
+		sizeByKeyVersion[c.Key+"\x00"+c.VersionID] = c.Size
 		o := st.ObjectIdentifier{Key: aws.String(c.Key)}
 		if state == "Enabled" || state == "Suspended" {
 			if c.VersionID == "" {
@@ -162,12 +218,53 @@ func deleteBatch(ctx context.Context, client *s3.Client, bucket, state string, b
 	})
 	if retryErr != nil {
 		log.Printf("BATCH ERROR after retries: %v", retryErr)
+		if auditEnc != nil {
+			for _, c := range batch {
+				auditEnc.Encode(AuditEntry{
+					Timestamp: time.Now().UTC().Format(time.RFC3339),
+					Action:    "DELETE",
+					Bucket:    bucket,
+					Key:       c.Key,
+					VersionID: c.VersionID,
+					Result:    "ERROR",
+					Error:     retryErr.Error(),
+					SizeBytes: c.Size,
+				})
+			}
+		}
 		return 0, len(batch), nil
 	}
 	deleted = len(out.Deleted)
+	if auditEnc != nil {
+		for _, d := range out.Deleted {
+			key, versionID := aws.ToString(d.Key), aws.ToString(d.VersionId)
+			auditEnc.Encode(AuditEntry{
+				Timestamp: time.Now().UTC().Format(time.RFC3339),
+				Action:    "DELETE",
+				Bucket:    bucket,
+				Key:       key,
+				VersionID: versionID,
+				Result:    "OK",
+				SizeBytes: sizeByKeyVersion[key+"\x00"+versionID],
+			})
+		}
+	}
 	for _, x := range out.Errors {
 		failed++
-		log.Printf("DELETE ERROR key=%q version_id=%q code=%s message=%s", aws.ToString(x.Key), aws.ToString(x.VersionId), aws.ToString(x.Code), aws.ToString(x.Message))
+		key, versionID := aws.ToString(x.Key), aws.ToString(x.VersionId)
+		log.Printf("DELETE ERROR key=%q version_id=%q code=%s message=%s", key, versionID, aws.ToString(x.Code), aws.ToString(x.Message))
+		if auditEnc != nil {
+			auditEnc.Encode(AuditEntry{
+				Timestamp: time.Now().UTC().Format(time.RFC3339),
+				Action:    "DELETE",
+				Bucket:    bucket,
+				Key:       key,
+				VersionID: versionID,
+				Result:    "ERROR",
+				Error:     aws.ToString(x.Code) + ": " + aws.ToString(x.Message),
+				SizeBytes: sizeByKeyVersion[key+"\x00"+versionID],
+			})
+		}
 	}
 	log.Printf("Processed batch of %d (deleted=%d failed=%d)", len(batch), deleted, failed)
 	return deleted, failed, nil
