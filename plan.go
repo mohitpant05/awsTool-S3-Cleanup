@@ -56,6 +56,12 @@ func plan(args []string) error {
 		return fmt.Errorf("GetBucketVersioning: %w", err)
 	}
 	log.Printf("Bucket versioning: %s", state)
+	if err := verifyRegion(ctx, sc, *bucket, *region); err != nil {
+		return err
+	}
+	if err := checkObjectLock(ctx, sc, *bucket); err != nil {
+		return err
+	}
 	where := []string{fmt.Sprintf("bucket = '%s'", strings.ReplaceAll(*bucket, "'", "''")), "is_delete_marker = false", fmt.Sprintf("last_modified_date < TIMESTAMP '%s'", ct.UTC().Format("2006-01-02 15:04:05"))}
 	for _, p := range parsePrefixes(*excludes) {
 		where = append(where, prefixExcludeClause(p))

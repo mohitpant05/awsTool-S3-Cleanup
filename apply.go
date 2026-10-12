@@ -73,6 +73,12 @@ func apply(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := verifyRegion(ctx, client, *bucket, *region); err != nil {
+		return err
+	}
+	if err := checkObjectLock(ctx, client, *bucket); err != nil {
+		return err
+	}
 	for _, c := range cs {
 		if c.Versioning != state {
 			return fmt.Errorf("versioning state changed (manifest %s, bucket %s); rerun plan", c.Versioning, state)
