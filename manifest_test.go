@@ -201,3 +201,75 @@ func TestVerifyManifestHash(t *testing.T) {
 		t.Fatal("tampered hash should fail verification")
 	}
 }
+
+func TestReadManifestDuplicateKeyVersion(t *testing.T) {
+	row := "test-bucket,dup-key,50,2022-06-01 00:00:00,v1,false,false,STANDARD,2026-10-11,Disabled,qid"
+	csv := manifestHeader + "\n" + row + "\n" + row + "\n"
+	f := writeTempCSV(t, csv)
+	_, err := readManifest(f, "test-bucket", nil, time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("expected duplicate error, got %v", err)
+	}
+}
+
+func TestReadManifestDeleteMarkerRejected(t *testing.T) {
+	csv := manifestHeader + "\n" +
+		"test-bucket,dm-key,0,2022-01-01 00:00:00,,true,true,STANDARD,2026-10-11,Disabled,qid\n"
+	f := writeTempCSV(t, csv)
+	_, err := readManifest(f, "test-bucket", nil, time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err == nil || !strings.Contains(err.Error(), "delete marker") {
+		t.Fatalf("expected delete marker error, got %v", err)
+	}
+}
+
+func TestReadManifestProtectedPrefix(t *testing.T) {
+	csv := manifestHeader + "\n" +
+		"test-bucket,reports/file.csv,100,2022-01-01 00:00:00,v1,true,false,STANDARD,2026-10-11,Disabled,qid\n"
+	f := writeTempCSV(t, csv)
+	_, err := readManifest(f, "test-bucket", []string{"reports/"}, time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err == nil || !strings.Contains(err.Error(), "protected") {
+		t.Fatalf("expected protected prefix error, got %v", err)
+	}
+}
+
+func TestReadManifestBucketMismatch(t *testing.T) {
+	csv := manifestHeader + "\n" +
+		"wrong-bucket,k,1,2022-01-01 00:00:00,v1,true,false,STANDARD,2026-10-11,Disabled,qid\n"
+	f := writeTempCSV(t, csv)
+	_, err := readManifest(f, "test-bucket", nil, time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err == nil || !strings.Contains(err.Error(), "wrong-bucket") {
+		t.Fatalf("expected bucket mismatch error, got %v", err)
+	}
+}
+
+func TestReadManifestWrongVersioningState(t *testing.T) {
+	csv := manifestHeader + "\n" +
+		"test-bucket,k,1,2022-01-01 00:00:00,v1,true,false,STANDARD,2026-10-11,InvalidState,qid\n"
+	f := writeTempCSV(t, csv)
+	_, err := readManifest(f, "test-bucket", nil, time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err == nil || !strings.Contains(err.Error(), "invalid versioning") {
+		t.Fatalf("expected versioning error, got %v", err)
+	}
+}
+
+func TestReadManifestNegativeSize(t *testing.T) {
+	csv := manifestHeader + "\n" +
+		"test-bucket,k,-5,2022-01-01 00:00:00,v1,true,false,STANDARD,2026-10-11,Disabled,qid\n"
+	f := writeTempCSV(t, csv)
+	_, err := readManifest(f, "test-bucket", nil, time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err == nil || !strings.Contains(err.Error(), "invalid size") {
+		t.Fatalf("expected negative size error, got %v", err)
+	}
+}
+
+func TestReadManifestMissingColumn(t *testing.T) {
+	headerCols := strings.Split(manifestHeader, ",")
+	truncatedHeader := strings.Join(headerCols[:len(headerCols)-1], ",")
+	csv := truncatedHeader + "\n" +
+		"test-bucket,k,1,2022-01-01 00:00:00,v1,true,false,STANDARD,2026-10-11,Disabled\n"
+	f := writeTempCSV(t, csv)
+	_, err := readManifest(f, "test-bucket", nil, time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err == nil || !strings.Contains(err.Error(), "missing column") {
+		t.Fatalf("expected missing column error, got %v", err)
+	}
+}
