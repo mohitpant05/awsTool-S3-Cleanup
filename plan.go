@@ -30,6 +30,7 @@ func plan(args []string) error {
 	manifest := f.String("manifest", "candidate-manifest.csv", "local manifest path")
 	wg := f.String("workgroup", "primary", "Athena workgroup")
 	excludes := f.String("exclude-prefixes", "reports/,athena-clean-test/,athena-test-data/,athena-query-results/", "comma-separated protected prefixes")
+	timeout := f.Duration("athena-timeout", 30*time.Minute, "max wait for Athena query")
 	if err := f.Parse(args); err != nil {
 		return err
 	}
@@ -43,7 +44,8 @@ func plan(args []string) error {
 	if err != nil {
 		return fmt.Errorf("bad cutoff: %w", err)
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
 	cfg, err := awsConfig(ctx, *region)
 	if err != nil {
 		return err
