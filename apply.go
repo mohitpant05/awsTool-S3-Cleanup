@@ -105,6 +105,9 @@ func apply(args []string) error {
 	if err != nil {
 		return err
 	}
+	if state == "Suspended" {
+		return fmt.Errorf("bucket %q has versioning Suspended; apply not validated for this state — resolve versioning before bulk deletion", *bucket)
+	}
 	if err := verifyRegion(ctx, client, *bucket, *region); err != nil {
 		return err
 	}

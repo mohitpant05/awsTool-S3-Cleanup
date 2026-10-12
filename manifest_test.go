@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -249,6 +250,50 @@ func TestReadManifestWrongVersioningState(t *testing.T) {
 	_, err := readManifest(f, "test-bucket", nil, time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC))
 	if err == nil || !strings.Contains(err.Error(), "invalid versioning") {
 		t.Fatalf("expected versioning error, got %v", err)
+	}
+}
+
+func TestReadManifestNullVersionIDAccepted(t *testing.T) {
+	csv := manifestHeader + "\n" +
+		"test-bucket,old-obj,100,2022-06-15 00:00:00,null,true,false,STANDARD,2026-10-11,Enabled,qid\n"
+	f := writeTempCSV(t, csv)
+	cands, err := readManifest(f, "test-bucket", nil, time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("VersionID \"null\" should be accepted for Enabled bucket: %v", err)
+	}
+	if len(cands) != 1 || cands[0].VersionID != "null" {
+		t.Fatalf("expected 1 candidate with VersionID=\"null\", got %d / %q", len(cands), cands[0].VersionID)
+	}
+}
+
+func TestNullVersionIDDistinctFromEmpty(t *testing.T) {
+	csv := manifestHeader + "\n" +
+		"test-bucket,key-null,100,2022-06-15 00:00:00,null,true,false,STANDARD,2026-10-11,Enabled,qid\n" +
+		"test-bucket,key-empty,100,2022-06-15 00:00:00,,true,false,STANDARD,2026-10-11,Enabled,qid\n"
+	f := writeTempCSV(t, csv)
+	cands, err := readManifest(f, "test-bucket", nil, time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cands) != 2 {
+		t.Fatalf("expected 2 candidates (null vs empty are distinct), got %d", len(cands))
+	}
+	if cands[0].VersionID == cands[1].VersionID {
+		t.Errorf("\"null\" and \"\" should be distinct version IDs, both are %q", cands[0].VersionID)
+	}
+}
+
+func TestDeleteBatchRejectsEmptyVersionIDForVersionedBucket(t *testing.T) {
+	csv := manifestHeader + "\n" +
+		"test-bucket,no-ver-key,100,2022-06-15 00:00:00,,true,false,STANDARD,2026-10-11,Enabled,qid\n"
+	f := writeTempCSV(t, csv)
+	cands, err := readManifest(f, "test-bucket", nil, time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_, _, err = deleteBatch(context.Background(), nil, "test-bucket", "Enabled", cands, nil)
+	if err == nil || !strings.Contains(err.Error(), "missing version_id") {
+		t.Fatalf("expected missing version_id error for empty VersionID on Enabled bucket, got %v", err)
 	}
 }
 
