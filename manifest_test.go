@@ -99,6 +99,92 @@ func TestHashManifest(t *testing.T) {
 	}
 }
 
+// TestStreamManifestAgreesWithReadManifest guards against streamManifest
+// (the OOM-safe fast path used by apply --execute) drifting from
+// readManifest (the authoritative, slice-based validator used by dry-run).
+// Both must accept or reject each input identically and, on success,
+// produce the same candidates in the same order.
+func TestStreamManifestAgreesWithReadManifest(t *testing.T) {
+	cutoff := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	protected := []string{"reports/"}
+	cases := []struct {
+		name string
+		csv  string
+	}{
+		{"valid multi-row", manifestHeader + "\n" +
+			"test-bucket,key1,100,2022-06-15 00:00:00,v1,true,false,STANDARD,2026-10-11,Disabled,qid\n" +
+			"test-bucket,key2,200,2022-07-15 00:00:00,v2,true,false,STANDARD,2026-10-11,Disabled,qid\n"},
+		{"wrong bucket", manifestHeader + "\n" +
+			"other-bucket,key1,100,2022-06-15 00:00:00,v1,true,false,STANDARD,2026-10-11,Disabled,qid\n"},
+		{"delete marker", manifestHeader + "\n" +
+			"test-bucket,key1,100,2022-06-15 00:00:00,v1,true,true,STANDARD,2026-10-11,Disabled,qid\n"},
+		{"after cutoff", manifestHeader + "\n" +
+			"test-bucket,key1,100,2024-06-15 00:00:00,v1,true,false,STANDARD,2026-10-11,Disabled,qid\n"},
+		{"invalid versioning state", manifestHeader + "\n" +
+			"test-bucket,key1,100,2022-06-15 00:00:00,v1,true,false,STANDARD,2026-10-11,Weird,qid\n"},
+		{"protected prefix", manifestHeader + "\n" +
+			"test-bucket,reports/key1,100,2022-06-15 00:00:00,v1,true,false,STANDARD,2026-10-11,Disabled,qid\n"},
+		{"duplicate key/version", manifestHeader + "\n" +
+			"test-bucket,key1,100,2022-06-15 00:00:00,v1,true,false,STANDARD,2026-10-11,Disabled,qid\n" +
+			"test-bucket,key1,100,2022-06-15 00:00:00,v1,true,false,STANDARD,2026-10-11,Disabled,qid\n"},
+		{"invalid size", manifestHeader + "\n" +
+			"test-bucket,key1,not-a-number,2022-06-15 00:00:00,v1,true,false,STANDARD,2026-10-11,Disabled,qid\n"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := writeTempCSV(t, tc.csv)
+
+			readResult, readErr := readManifest(f, "test-bucket", protected, cutoff)
+
+			var streamed []Candidate
+			streamErr := streamManifest(f, "test-bucket", protected, cutoff, 0, func(c Candidate) error {
+				streamed = append(streamed, c)
+				return nil
+			})
+
+			if (readErr == nil) != (streamErr == nil) {
+				t.Fatalf("disagreement on error: readManifest err=%v, streamManifest err=%v", readErr, streamErr)
+			}
+			if readErr != nil {
+				return
+			}
+			if len(readResult) != len(streamed) {
+				t.Fatalf("disagreement on count: readManifest=%d, streamManifest=%d", len(readResult), len(streamed))
+			}
+			for i := range readResult {
+				if readResult[i] != streamed[i] {
+					t.Errorf("disagreement at index %d: readManifest=%+v, streamManifest=%+v", i, readResult[i], streamed[i])
+				}
+			}
+		})
+	}
+}
+
+// TestStreamManifestRespectsLimit verifies streamManifest stops calling fn
+// once limit candidates have been produced, without reading past that point
+// into memory.
+func TestStreamManifestRespectsLimit(t *testing.T) {
+	csv := manifestHeader + "\n" +
+		"test-bucket,key1,100,2022-06-15 00:00:00,v1,true,false,STANDARD,2026-10-11,Disabled,qid\n" +
+		"test-bucket,key2,100,2022-06-15 00:00:00,v2,true,false,STANDARD,2026-10-11,Disabled,qid\n" +
+		"test-bucket,key3,100,2022-06-15 00:00:00,v3,true,false,STANDARD,2026-10-11,Disabled,qid\n"
+	f := writeTempCSV(t, csv)
+	cutoff := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	var got []Candidate
+	err := streamManifest(f, "test-bucket", nil, cutoff, 2, func(c Candidate) error {
+		got = append(got, c)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected limit of 2 candidates, got %d", len(got))
+	}
+}
+
 func TestVerifyManifestHash(t *testing.T) {
 	content := manifestHeader + "\ntest-bucket,k,1,2022-01-01 00:00:00,,true,false,STANDARD,2026-10-11,Disabled,qid\n"
 	csvPath := writeTempCSV(t, content)
