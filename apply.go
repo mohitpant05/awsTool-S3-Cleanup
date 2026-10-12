@@ -91,10 +91,15 @@ func apply(args []string) error {
 			}
 			ids = append(ids, o)
 		}
-		out, e := client.DeleteObjects(ctx, &s3.DeleteObjectsInput{Bucket: aws.String(*bucket), ExpectedBucketOwner: aws.String(accountID), Delete: &st.Delete{Objects: ids, Quiet: aws.Bool(false)}})
-		if e != nil {
+		var out *s3.DeleteObjectsOutput
+		err := retryWithBackoff(ctx, 3, 500*time.Millisecond, func() error {
+			var e error
+			out, e = client.DeleteObjects(ctx, &s3.DeleteObjectsInput{Bucket: aws.String(*bucket), ExpectedBucketOwner: aws.String(accountID), Delete: &st.Delete{Objects: ids, Quiet: aws.Bool(false)}})
+			return e
+		})
+		if err != nil {
 			failed += len(batch)
-			log.Printf("BATCH ERROR: %v", e)
+			log.Printf("BATCH ERROR after retries: %v", err)
 			continue
 		}
 		deleted += len(out.Deleted)
