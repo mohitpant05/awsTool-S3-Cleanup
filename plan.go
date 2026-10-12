@@ -127,6 +127,16 @@ func plan(args []string) error {
 	if err = file.Sync(); err != nil {
 		return err
 	}
+	hash, err := hashManifest(*manifest)
+	if err != nil {
+		return fmt.Errorf("hash manifest: %w", err)
+	}
+	hashPath := *manifest + ".sha256"
+	if err = os.WriteFile(hashPath, []byte(hash+"  "+*manifest+"\n"), 0644); err != nil {
+		return err
+	}
+	log.Printf("Manifest SHA-256: %s", hash)
+	log.Printf("Hash file: %s", hashPath)
 	log.Printf("PLAN ONLY — no deletions performed")
 	log.Printf("Candidates (object versions): %d", rows)
 	log.Printf("Summed candidate size: %d bytes | %.2f MiB | %.2f GiB | %.6f TiB", bytes, float64(bytes)/(1<<20), float64(bytes)/(1<<30), float64(bytes)/(1<<40))

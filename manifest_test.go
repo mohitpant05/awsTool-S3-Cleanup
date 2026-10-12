@@ -82,3 +82,36 @@ func TestParseDateInvalid(t *testing.T) {
 		t.Fatal("expected error for invalid date")
 	}
 }
+
+func TestHashManifest(t *testing.T) {
+	content := manifestHeader + "\ntest-bucket,k,1,2022-01-01 00:00:00,,true,false,STANDARD,2026-10-11,Disabled,qid\n"
+	f := writeTempCSV(t, content)
+	hash, err := hashManifest(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hash) != 64 {
+		t.Errorf("expected 64 hex chars, got %d: %s", len(hash), hash)
+	}
+	hash2, _ := hashManifest(f)
+	if hash != hash2 {
+		t.Error("same file should produce same hash")
+	}
+}
+
+func TestVerifyManifestHash(t *testing.T) {
+	content := manifestHeader + "\ntest-bucket,k,1,2022-01-01 00:00:00,,true,false,STANDARD,2026-10-11,Disabled,qid\n"
+	csvPath := writeTempCSV(t, content)
+	hash, _ := hashManifest(csvPath)
+	hashPath := csvPath + ".sha256"
+	os.WriteFile(hashPath, []byte(hash+"  "+csvPath+"\n"), 0644)
+
+	if err := verifyManifestHash(csvPath, hashPath); err != nil {
+		t.Fatalf("valid hash should verify: %v", err)
+	}
+
+	os.WriteFile(hashPath, []byte("badhash  "+csvPath+"\n"), 0644)
+	if err := verifyManifestHash(csvPath, hashPath); err == nil {
+		t.Fatal("tampered hash should fail verification")
+	}
+}

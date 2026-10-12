@@ -36,6 +36,11 @@ func apply(args []string) error {
 	if err != nil {
 		return fmt.Errorf("invalid --cutoff: %w", err)
 	}
+	hashPath := *manifest + ".sha256"
+	if err := verifyManifestHash(*manifest, hashPath); err != nil {
+		return fmt.Errorf("manifest integrity check failed: %w", err)
+	}
+	log.Printf("Manifest integrity verified (SHA-256)")
 	cs, err := readManifest(*manifest, *bucket, parsePrefixes(*excludes), cutoffTime)
 	if err != nil {
 		return err

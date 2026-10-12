@@ -1,7 +1,10 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/csv"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -91,6 +94,38 @@ func readManifest(path, bucket string, protected []string, cutoff time.Time) ([]
 	}
 	return result, nil
 }
+func hashManifest(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func verifyManifestHash(manifestPath, hashPath string) error {
+	expected, err := os.ReadFile(hashPath)
+	if err != nil {
+		return fmt.Errorf("read hash file: %w", err)
+	}
+	fields := strings.Fields(strings.TrimSpace(string(expected)))
+	if len(fields) == 0 {
+		return errors.New("empty hash file")
+	}
+	actual, err := hashManifest(manifestPath)
+	if err != nil {
+		return err
+	}
+	if actual != fields[0] {
+		return fmt.Errorf("manifest hash mismatch: expected %s, got %s", fields[0], actual)
+	}
+	return nil
+}
+
 func parseDate(s string) (time.Time, error) {
 	for _, layout := range []string{"2006-01-02 15:04:05.000000", "2006-01-02 15:04:05.000", "2006-01-02 15:04:05", "2006-01-02", time.RFC3339Nano} {
 		if t, e := time.Parse(layout, strings.TrimSpace(s)); e == nil {
