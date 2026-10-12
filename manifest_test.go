@@ -22,7 +22,7 @@ func writeTempCSV(t *testing.T, content string) string {
 
 func TestReadManifestCutoffErrorShowsActualDate(t *testing.T) {
 	csv := manifestHeader + "\n" +
-		"test-bucket,key1,100,2024-06-15 00:00:00,,true,false,Disabled\n"
+		"test-bucket,key1,100,2024-06-15 00:00:00,,true,false,STANDARD,2026-10-11,Disabled,qid\n"
 	f := writeTempCSV(t, csv)
 	cutoff := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	_, err := readManifest(f, "test-bucket", nil, cutoff)
@@ -39,7 +39,7 @@ func TestReadManifestCutoffErrorShowsActualDate(t *testing.T) {
 
 func TestReadManifestAcceptsBeforeCutoff(t *testing.T) {
 	csv := manifestHeader + "\n" +
-		"test-bucket,key1,100,2022-06-15 00:00:00,v1,true,false,Disabled\n"
+		"test-bucket,key1,100,2022-06-15 00:00:00,v1,true,false,STANDARD,2026-10-11,Disabled,qid\n"
 	f := writeTempCSV(t, csv)
 	cutoff := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
 	cands, err := readManifest(f, "test-bucket", nil, cutoff)

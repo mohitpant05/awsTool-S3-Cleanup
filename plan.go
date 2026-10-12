@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/csv"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -19,6 +20,23 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
+type PlanSummary struct {
+	Timestamp      string `json:"timestamp"`
+	Account        string `json:"account"`
+	Bucket         string `json:"bucket"`
+	Region         string `json:"region"`
+	Versioning     string `json:"versioning"`
+	Cutoff         string `json:"cutoff"`
+	SnapshotDate   string `json:"snapshot_date"`
+	QueryID        string `json:"query_execution_id"`
+	Database       string `json:"database"`
+	Table          string `json:"table"`
+	Candidates     int64  `json:"candidate_count"`
+	CandidateBytes int64  `json:"candidate_bytes"`
+	ManifestPath   string `json:"manifest_path"`
+	ManifestHash   string `json:"manifest_sha256"`
+}
+
 func plan(args []string) error {
 	f := flag.NewFlagSet("plan", flag.ContinueOnError)
 	bucket := f.String("bucket", "", "source bucket")
@@ -31,11 +49,16 @@ func plan(args []string) error {
 	wg := f.String("workgroup", "primary", "Athena workgroup")
 	excludes := f.String("exclude-prefixes", "reports/,athena-clean-test/,athena-test-data/,athena-query-results/", "comma-separated protected prefixes")
 	timeout := f.Duration("athena-timeout", 30*time.Minute, "max wait for Athena query")
+	snapshotDate := f.String("snapshot-date", "", "Inventory snapshot date (YYYY-MM-DD); logged for traceability")
 	if err := f.Parse(args); err != nil {
 		return err
 	}
 	if *bucket == "" || *output == "" || !strings.HasPrefix(*output, "s3://") {
 		return errors.New("plan requires --bucket and --athena-output s3://...")
+	}
+	if *snapshotDate == "" {
+		log.Printf("WARNING: --snapshot-date not supplied; recording inventory_snapshot_date as \"unknown\"")
+		*snapshotDate = "unknown"
 	}
 	if !identifier.MatchString(*db) || !identifier.MatchString(*table) {
 		return errors.New("database/table must contain only letters, digits, underscores")
@@ -66,7 +89,7 @@ func plan(args []string) error {
 	for _, p := range parsePrefixes(*excludes) {
 		where = append(where, prefixExcludeClause(p))
 	}
-	query := fmt.Sprintf(`SELECT bucket, "key" AS object_key, size, last_modified_date, version_id, is_latest, is_delete_marker FROM %s.%s WHERE %s ORDER BY last_modified_date ASC`, *db, *table, strings.Join(where, " AND "))
+	query := fmt.Sprintf(`SELECT bucket, "key" AS object_key, size, last_modified_date, version_id, is_latest, is_delete_marker, storage_class FROM %s.%s WHERE %s ORDER BY last_modified_date ASC`, *db, *table, strings.Join(where, " AND "))
 	ac := athena.NewFromConfig(cfg)
 	started, err := ac.StartQueryExecution(ctx, &athena.StartQueryExecutionInput{QueryString: aws.String(query), QueryExecutionContext: &at.QueryExecutionContext{Database: aws.String(*db)}, WorkGroup: aws.String(*wg), ResultConfiguration: &at.ResultConfiguration{OutputLocation: aws.String(*output)}})
 	if err != nil {
@@ -98,7 +121,7 @@ func plan(args []string) error {
 			if first && i == 0 {
 				continue
 			}
-			vals := make([]string, 7)
+			vals := make([]string, 8)
 			for j := 0; j < len(vals) && j < len(row.Data); j++ {
 				if row.Data[j].VarCharValue != nil {
 					vals[j] = aws.ToString(row.Data[j].VarCharValue)
@@ -114,7 +137,7 @@ func plan(args []string) error {
 			if strings.EqualFold(vals[6], "true") {
 				return fmt.Errorf("delete marker returned in candidate query for %q", vals[1])
 			}
-			if e = w.Write(append(vals, state)); e != nil {
+			if e = w.Write(append(vals, *snapshotDate, state, qid)); e != nil {
 				return e
 			}
 			rows++
@@ -143,6 +166,31 @@ func plan(args []string) error {
 	}
 	log.Printf("Manifest SHA-256: %s", hash)
 	log.Printf("Hash file: %s", hashPath)
+	summary := PlanSummary{
+		Timestamp:      time.Now().UTC().Format(time.RFC3339),
+		Account:        accountID,
+		Bucket:         *bucket,
+		Region:         *region,
+		Versioning:     state,
+		Cutoff:         ct.Format(time.RFC3339),
+		SnapshotDate:   *snapshotDate,
+		QueryID:        qid,
+		Database:       *db,
+		Table:          *table,
+		Candidates:     rows,
+		CandidateBytes: bytes,
+		ManifestPath:   *manifest,
+		ManifestHash:   hash,
+	}
+	summaryPath := *manifest + ".summary.json"
+	sj, err := json.MarshalIndent(summary, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal plan summary: %w", err)
+	}
+	if err = os.WriteFile(summaryPath, sj, 0644); err != nil {
+		return err
+	}
+	log.Printf("Summary: %s", summaryPath)
 	log.Printf("PLAN ONLY — no deletions performed")
 	log.Printf("Candidates (object versions): %d", rows)
 	log.Printf("Summed candidate size: %d bytes | %.2f MiB | %.2f GiB | %.6f TiB", bytes, float64(bytes)/(1<<20), float64(bytes)/(1<<30), float64(bytes)/(1<<40))

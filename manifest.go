@@ -13,12 +13,13 @@ import (
 	"time"
 )
 
-const manifestHeader = "bucket,object_key,size,last_modified_date,version_id,is_latest,is_delete_marker,versioning_status"
+const manifestHeader = "bucket,object_key,size_bytes,last_modified_date,version_id,is_latest,is_delete_marker,storage_class,inventory_snapshot_date,versioning_status_at_plan_time,query_execution_id"
 
 type Candidate struct {
-	Bucket, Key                                           string
-	Size                                                  int64
-	Modified, VersionID, Latest, DeleteMarker, Versioning string
+	Bucket, Key                                                         string
+	Size                                                                int64
+	Modified, VersionID, Latest, DeleteMarker, StorageClass, Versioning string
+	SnapshotDate, QueryID                                               string
 }
 
 func readManifest(path, bucket string, protected []string, cutoff time.Time) ([]Candidate, error) {
@@ -59,14 +60,25 @@ func readManifest(path, bucket string, protected []string, cutoff time.Time) ([]
 			}
 			return strings.TrimSpace(row[i])
 		}
-		c := Candidate{Bucket: get("bucket"), Key: get("object_key"), Modified: get("last_modified_date"), VersionID: get("version_id"), Latest: strings.ToLower(get("is_latest")), DeleteMarker: strings.ToLower(get("is_delete_marker")), Versioning: get("versioning_status")}
+		c := Candidate{
+			Bucket:       get("bucket"),
+			Key:          get("object_key"),
+			Modified:     get("last_modified_date"),
+			VersionID:    get("version_id"),
+			Latest:       strings.ToLower(get("is_latest")),
+			DeleteMarker: strings.ToLower(get("is_delete_marker")),
+			StorageClass: get("storage_class"),
+			SnapshotDate: get("inventory_snapshot_date"),
+			Versioning:   get("versioning_status_at_plan_time"),
+			QueryID:      get("query_execution_id"),
+		}
 		if c.Bucket != bucket {
 			return nil, fmt.Errorf("manifest bucket %q != requested bucket %q", c.Bucket, bucket)
 		}
 		if c.Key == "" || c.DeleteMarker == "true" {
 			return nil, fmt.Errorf("invalid key or delete marker candidate: %q", c.Key)
 		}
-		c.Size, e = strconv.ParseInt(get("size"), 10, 64)
+		c.Size, e = strconv.ParseInt(get("size_bytes"), 10, 64)
 		if e != nil || c.Size < 0 {
 			return nil, fmt.Errorf("invalid size for %q", c.Key)
 		}
