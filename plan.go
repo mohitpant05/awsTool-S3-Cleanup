@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/athena"
@@ -55,7 +56,7 @@ func plan(args []string) error {
 	log.Printf("Bucket versioning: %s", state)
 	where := []string{fmt.Sprintf("bucket = '%s'", strings.ReplaceAll(*bucket, "'", "''")), "is_delete_marker = false", fmt.Sprintf("last_modified_date < TIMESTAMP '%s'", ct.UTC().Format("2006-01-02 15:04:05"))}
 	for _, p := range parsePrefixes(*excludes) {
-		where = append(where, fmt.Sprintf(`substr("key", 1, %d) <> '%s'`, len(p), strings.ReplaceAll(p, "'", "''")))
+		where = append(where, prefixExcludeClause(p))
 	}
 	query := fmt.Sprintf(`SELECT bucket, "key" AS object_key, size, last_modified_date, version_id, is_latest, is_delete_marker FROM %s.%s WHERE %s ORDER BY last_modified_date ASC`, *db, *table, strings.Join(where, " AND "))
 	ac := athena.NewFromConfig(cfg)
@@ -130,6 +131,10 @@ func plan(args []string) error {
 	log.Printf("Manifest: %s", *manifest)
 	log.Printf("Delete markers excluded/preserved; bytes are an estimate, not a guarantee of immediate metric decrease")
 	return nil
+}
+func prefixExcludeClause(prefix string) string {
+	escaped := strings.ReplaceAll(prefix, "'", "''")
+	return fmt.Sprintf(`substr("key", 1, %d) <> '%s'`, utf8.RuneCountInString(prefix), escaped)
 }
 func wait(ctx context.Context, c *athena.Client, id string) error {
 	t := time.NewTicker(3 * time.Second)

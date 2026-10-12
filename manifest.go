@@ -72,7 +72,7 @@ func readManifest(path, bucket string, protected []string, cutoff time.Time) ([]
 			return nil, e
 		}
 		if !d.Before(cutoff) {
-			return nil, fmt.Errorf("%q is not before cutoff 2023-01-01", c.Key)
+			return nil, fmt.Errorf("%q modified %s is not before cutoff %s", c.Key, c.Modified, cutoff.Format("2006-01-02T15:04:05Z"))
 		}
 		if c.Versioning != "Enabled" && c.Versioning != "Suspended" && c.Versioning != "Disabled" {
 			return nil, fmt.Errorf("invalid versioning state %q", c.Versioning)
@@ -92,7 +92,7 @@ func readManifest(path, bucket string, protected []string, cutoff time.Time) ([]
 	return result, nil
 }
 func parseDate(s string) (time.Time, error) {
-	for _, layout := range []string{"2006-01-02 15:04:05.000000", "2006-01-02 15:04:05.000", "2006-01-02 15:04:05", time.RFC3339Nano} {
+	for _, layout := range []string{"2006-01-02 15:04:05.000000", "2006-01-02 15:04:05.000", "2006-01-02 15:04:05", "2006-01-02", time.RFC3339Nano} {
 		if t, e := time.Parse(layout, strings.TrimSpace(s)); e == nil {
 			return t, nil
 		}
